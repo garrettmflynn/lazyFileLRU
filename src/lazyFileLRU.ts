@@ -69,12 +69,18 @@ export type PageReadLog = {
 
 type ReadHead = { startChunk: number; speed: number };
 export class LazyUint8Array {
-  private serverChecked = false;
   private readonly cache: Cache; // cache instance
   totalFetchedBytes = 0;
   totalRequests = 0;
   readPages: PageReadLog[] = [];
   private _length?: number;
+
+  #ready: {
+    resolve: (value?: any) => any
+    reject: (value?: any) => any
+  }
+  
+  ready: Promise<any>
 
   // LRU list of read heds, max length = maxReadHeads. first is most recently used
   private readonly readHeads: ReadHead[] = [];
@@ -104,6 +110,11 @@ export class LazyUint8Array {
         this.cache = new defaultCache();
     }
     console.log(this.cache);
+
+    this.ready = new Promise((resolve, reject) => this.#ready = { resolve, reject })
+
+    this.checkServer()
+
   }
   /**
    * efficiently copy the range [start, start + length) from the http file into the
@@ -210,23 +221,47 @@ export class LazyUint8Array {
     return (this.cache.get(wantedChunkNum) as Uint8Array);
   }
   /** verify the server supports range requests and find out file length */
-  private checkServer() {
+  private async checkServer() {
     var xhr = new XMLHttpRequest();
     const url = this.rangeMapper(0, 0).url;
-    // can't set Accept-Encoding header :( https://stackoverflow.com/questions/41701849/cannot-modify-accept-encoding-with-fetch
-    xhr.open("HEAD", url, false);
-    // // maybe this will help it not use compression?
-    // xhr.setRequestHeader("Range", "bytes=" + 0 + "-" + 1e12);
-    xhr.send(null);
-    if (!((xhr.status >= 200 && xhr.status < 300) || xhr.status === 304))
-      throw new Error("Couldn't load " + url + ". Status: " + xhr.status);
-    var datalength: number | null = Number(
-      xhr.getResponseHeader("Content-length")
-    );
+    
+    let datalength: number | null
+    let hasByteServing: boolean
+    let encoding: string | null
+    let usesCompression: boolean
 
-    var hasByteServing = xhr.getResponseHeader("Accept-Ranges") === "bytes";
-    const encoding = xhr.getResponseHeader("Content-Encoding");
-    var usesCompression = encoding && encoding !== "identity";
+    // can't set Accept-Encoding header :( https://stackoverflow.com/questions/41701849/cannot-modify-accept-encoding-with-fetch
+    try {
+      xhr.open("HEAD", url, false);
+      // // maybe this will help it not use compression?
+      // xhr.setRequestHeader("Range", "bytes=" + 0 + "-" + 1e12);
+      xhr.send(null);
+      datalength = Number(
+        xhr.getResponseHeader("Content-length")
+      );
+
+      hasByteServing = xhr.getResponseHeader("Accept-Ranges") === "bytes";
+      encoding = xhr.getResponseHeader("Content-Encoding");
+
+    } catch {
+
+      const controller = new AbortController();
+      const signal = controller.signal;
+
+      await fetch(url, { signal }).then(response => {
+        datalength = Number(response.headers.get("Content-length"));
+        hasByteServing = response.headers.get("Accept-Ranges") === "bytes";
+        encoding = response.headers.get("Content-Encoding");
+        controller.abort();
+      }).catch(this.#ready.reject)
+    }
+
+    usesCompression = (encoding && encoding !== "identity") as boolean;
+
+    console.log("datalength", datalength);
+    console.log("hasByteServing", hasByteServing);
+    console.log("encoding", encoding);
+    console.log("usesCompression", usesCompression);
 
     if (!hasByteServing) {
       const msg =
@@ -256,19 +291,14 @@ export class LazyUint8Array {
       }
       this._length = datalength;
     }
-    this.serverChecked = true;
+
+    this.#ready.resolve(true)
   }
   get length() {
-    if (!this.serverChecked) {
-      this.checkServer();
-    }
     return this._length!;
   }
 
   get chunkSize() {
-    if (!this.serverChecked) {
-      this.checkServer();
-    }
     return this._chunkSize!;
   }
   private doXHR(absoluteFrom: number, absoluteTo: number) {
@@ -321,7 +351,7 @@ export class LazyUint8Array {
   }
 }
 /** create the actual file object for the emscripten file system */
-export function createLazyFile(
+export async function createLazyFile(
   FS: any,
   parent: string,
   name: string,
@@ -331,6 +361,7 @@ export function createLazyFile(
 ) {
   var lazyArray = new LazyUint8Array(lazyFileConfig);
   var properties = { isDevice: false, contents: lazyArray };
+  await lazyArray.ready
 
   var node = FS.createFile(parent, name, properties, canRead, canWrite);
   node.contents = lazyArray;

@@ -25,7 +25,7 @@ self.onmessage = async function (event) {
             LRUSize
         }
         //hdf5.FS.createLazyFile('/', "current.h5", DEMO_FILEPATH, true, false);
-        createLazyFile(FS, '/', 'current.h5', true, false, config);
+        await createLazyFile(FS, '/', 'current.h5', true, false, config);
         file = new File("current.h5");
     }
     else if (action === "get") {
