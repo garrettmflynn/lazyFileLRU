@@ -230,31 +230,57 @@ export class LazyUint8Array {
     let encoding: string | null
     let usesCompression: boolean
 
-    // can't set Accept-Encoding header :( https://stackoverflow.com/questions/41701849/cannot-modify-accept-encoding-with-fetch
-    try {
+      // can't set Accept-Encoding header :( https://stackoverflow.com/questions/41701849/cannot-modify-accept-encoding-with-fetch
       xhr.open("HEAD", url, false);
       // // maybe this will help it not use compression?
       // xhr.setRequestHeader("Range", "bytes=" + 0 + "-" + 1e12);
       xhr.send(null);
-      datalength = Number(
-        xhr.getResponseHeader("Content-length")
-      );
+      if (xhr.status >= 200 && xhr.status < 400) {
+        datalength = Number(
+          xhr.getResponseHeader("Content-length")
+        );
+  
+        hasByteServing = xhr.getResponseHeader("Accept-Ranges") === "bytes";
+        encoding = xhr.getResponseHeader("Content-Encoding");
+      }
+      else {
+        console.log("HEAD request failed... falling back to aborted GET");
+        const controller = new AbortController();
+        const signal = controller.signal;
+  
+        await fetch(url, { signal }).then(response => {
+          datalength = Number(response.headers.get("Content-length"));
+          hasByteServing = response.headers.get("Accept-Ranges") === "bytes";
+          encoding = response.headers.get("Content-Encoding");
+          controller.abort();
+        }).catch(this.#ready.reject)
+        }
 
-      hasByteServing = xhr.getResponseHeader("Accept-Ranges") === "bytes";
-      encoding = xhr.getResponseHeader("Content-Encoding");
+    // // can't set Accept-Encoding header :( https://stackoverflow.com/questions/41701849/cannot-modify-accept-encoding-with-fetch
+    // try {
+    //   xhr.open("HEAD", url, false);
+    //   // // maybe this will help it not use compression?
+    //   // xhr.setRequestHeader("Range", "bytes=" + 0 + "-" + 1e12);
+    //   xhr.send(null);
+    //   datalength = Number(
+    //     xhr.getResponseHeader("Content-length")
+    //   );
 
-    } catch {
+    //   hasByteServing = xhr.getResponseHeader("Accept-Ranges") === "bytes";
+    //   encoding = xhr.getResponseHeader("Content-Encoding");
 
-      const controller = new AbortController();
-      const signal = controller.signal;
+    // } catch {
 
-      await fetch(url, { signal }).then(response => {
-        datalength = Number(response.headers.get("Content-length"));
-        hasByteServing = response.headers.get("Accept-Ranges") === "bytes";
-        encoding = response.headers.get("Content-Encoding");
-        controller.abort();
-      }).catch(this.#ready.reject)
-    }
+    //   const controller = new AbortController();
+    //   const signal = controller.signal;
+
+    //   await fetch(url, { signal }).then(response => {
+    //     datalength = Number(response.headers.get("Content-length"));
+    //     hasByteServing = response.headers.get("Accept-Ranges") === "bytes";
+    //     encoding = response.headers.get("Content-Encoding");
+    //     controller.abort();
+    //   }).catch(this.#ready.reject)
+    // }
 
     usesCompression = (encoding && encoding !== "identity") as boolean;
 
