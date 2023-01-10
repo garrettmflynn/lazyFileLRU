@@ -2,6 +2,7 @@
   "name": "lazyfile-lru",
   "version": "1.0.0",
   "description": "",
+  "type": "module",
   "main": "dist/lazyFileLRU.mjs",
   "scripts": {
     "clean": "rm -fr dist",

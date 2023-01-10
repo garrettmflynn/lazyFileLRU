@@ -14,6 +14,8 @@ const DEMO_FILEPATH="https://ncnr.nist.gov/pub/ncnrdata/ngbsans/202009/nonims294
 
 self.onmessage = async function (event) {
     const { action, payload } = event.data;
+
+    console.log('GOT MESSAGE IN WORKER', event.data)
     if (action === "load") {
         const url = payload?.url ?? DEMO_FILEPATH;
         const requestChunkSize = payload?.requestChunkSize ?? 1024 * 1024;
@@ -58,3 +60,6 @@ self.onmessage = async function (event) {
         }
     }
   };
+
+  export default self as any;
+
