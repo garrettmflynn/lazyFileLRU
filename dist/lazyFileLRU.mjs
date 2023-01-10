@@ -323,12 +323,13 @@ var LazyUint8Array = class {
     this.readPages = [];
     this.readHeads = [];
     this.lastGet = -1;
-    var _a, _b;
     this._chunkSize = config.requestChunkSize;
-    this.maxSpeed = Math.round((config.maxReadSpeed || 5 * 1024 * 1024) / this._chunkSize);
-    this.maxReadHeads = (_a = config.maxReadHeads) != null ? _a : 3;
+    this.maxSpeed = Math.round(
+      (config.maxReadSpeed || 5 * 1024 * 1024) / this._chunkSize
+    );
+    this.maxReadHeads = config.maxReadHeads ?? 3;
     this.rangeMapper = config.rangeMapper;
-    this.logPageReads = (_b = config.logPageReads) != null ? _b : false;
+    this.logPageReads = config.logPageReads ?? false;
     if (config.fileLength) {
       this._length = config.fileLength;
     }
@@ -341,7 +342,10 @@ var LazyUint8Array = class {
       this.cache = new defaultCache();
     }
     console.log(this.cache);
+    this.ready = new Promise((resolve, reject) => this.#ready = { resolve, reject });
+    this.checkServer();
   }
+  #ready;
   copyInto(buffer, outOffset, length, start) {
     if (start >= this.length)
       return 0;
@@ -403,7 +407,11 @@ var LazyUint8Array = class {
         if (i * this.chunkSize >= buf.byteLength)
           break;
         const curSize = (i + 1) * this.chunkSize > buf.byteLength ? buf.byteLength - i * this.chunkSize : this.chunkSize;
-        this.cache.set(curChunk, new Uint8Array(buf, i * this.chunkSize, curSize));
+        this.cache.set(curChunk, new Uint8Array(
+          buf,
+          i * this.chunkSize,
+          curSize
+        ));
       }
     }
     if (!this.cache.has(wantedChunkNum))
@@ -419,23 +427,49 @@ var LazyUint8Array = class {
     }
     return this.cache.get(wantedChunkNum);
   }
-  checkServer() {
+  async checkServer() {
     var xhr = new XMLHttpRequest();
     const url = this.rangeMapper(0, 0).url;
-    xhr.open("HEAD", url, false);
-    xhr.send(null);
-    if (!(xhr.status >= 200 && xhr.status < 300 || xhr.status === 304))
-      throw new Error("Couldn't load " + url + ". Status: " + xhr.status);
-    var datalength = Number(xhr.getResponseHeader("Content-length"));
-    var hasByteServing = xhr.getResponseHeader("Accept-Ranges") === "bytes";
-    const encoding = xhr.getResponseHeader("Content-Encoding");
-    var usesCompression = encoding && encoding !== "identity";
+    let datalength;
+    let hasByteServing;
+    let encoding;
+    let usesCompression;
+    try {
+      xhr.open("HEAD", url, false);
+      xhr.send(null);
+      datalength = Number(
+        xhr.getResponseHeader("Content-length")
+      );
+      hasByteServing = xhr.getResponseHeader("Accept-Ranges") === "bytes";
+      encoding = xhr.getResponseHeader("Content-Encoding");
+    } catch {
+      const controller = new AbortController();
+      const signal = controller.signal;
+      await fetch(url, { signal }).then((response) => {
+        datalength = Number(response.headers.get("Content-length"));
+        hasByteServing = response.headers.get("Accept-Ranges") === "bytes";
+        encoding = response.headers.get("Content-Encoding");
+        controller.abort();
+      }).catch(this.#ready.reject);
+    }
+    usesCompression = encoding && encoding !== "identity";
+    console.log("datalength", datalength);
+    console.log("hasByteServing", hasByteServing);
+    console.log("encoding", encoding);
+    console.log("usesCompression", usesCompression);
     if (!hasByteServing) {
       const msg = "Warning: The server did not respond with Accept-Ranges=bytes. It either does not support byte serving or does not advertise it (`Accept-Ranges: bytes` header missing), or your database is hosted on CORS and the server doesn't mark the accept-ranges header as exposed. This may lead to incorrect results.";
-      console.warn(msg, "(seen response headers:", xhr.getAllResponseHeaders(), ")");
+      console.warn(
+        msg,
+        "(seen response headers:",
+        xhr.getAllResponseHeaders(),
+        ")"
+      );
     }
     if (usesCompression) {
-      console.warn(`Warning: The server responded with ${encoding} encoding to a HEAD request. Ignoring since it may not do so for Range HTTP requests, but this will lead to incorrect results otherwise since the ranges will be based on the compressed data instead of the uncompressed data.`);
+      console.warn(
+        `Warning: The server responded with ${encoding} encoding to a HEAD request. Ignoring since it may not do so for Range HTTP requests, but this will lead to incorrect results otherwise since the ranges will be based on the compressed data instead of the uncompressed data.`
+      );
     }
     if (usesCompression) {
       datalength = null;
@@ -447,29 +481,30 @@ var LazyUint8Array = class {
       }
       this._length = datalength;
     }
+    this.#ready.resolve(true);
     this.serverChecked = true;
   }
   get length() {
-    if (!this.serverChecked) {
-      this.checkServer();
-    }
     return this._length;
   }
   get chunkSize() {
-    if (!this.serverChecked) {
-      this.checkServer();
-    }
     return this._chunkSize;
   }
   doXHR(absoluteFrom, absoluteTo) {
-    console.log(`[xhr of size ${(absoluteTo + 1 - absoluteFrom) / 1024} KiB @ ${absoluteFrom / 1024} KiB]`);
+    console.log(
+      `[xhr of size ${(absoluteTo + 1 - absoluteFrom) / 1024} KiB @ ${absoluteFrom / 1024} KiB]`
+    );
     this.requestLimiter(absoluteTo - absoluteFrom);
     this.totalFetchedBytes += absoluteTo - absoluteFrom;
     this.totalRequests++;
     if (absoluteFrom > absoluteTo)
-      throw new Error("invalid range (" + absoluteFrom + ", " + absoluteTo + ") or no bytes requested!");
+      throw new Error(
+        "invalid range (" + absoluteFrom + ", " + absoluteTo + ") or no bytes requested!"
+      );
     if (absoluteTo > this.length - 1)
-      throw new Error("only " + this.length + " bytes available! programmer error!");
+      throw new Error(
+        "only " + this.length + " bytes available! programmer error!"
+      );
     const {
       fromByte: from,
       toByte: to,
@@ -493,9 +528,10 @@ var LazyUint8Array = class {
     }
   }
 };
-function createLazyFile(FS, parent, name, canRead, canWrite, lazyFileConfig) {
+async function createLazyFile(FS, parent, name, canRead, canWrite, lazyFileConfig) {
   var lazyArray = new LazyUint8Array(lazyFileConfig);
   var properties = { isDevice: false, contents: lazyArray };
+  await lazyArray.ready;
   var node = FS.createFile(parent, name, properties, canRead, canWrite);
   node.contents = lazyArray;
   Object.defineProperties(node, {
